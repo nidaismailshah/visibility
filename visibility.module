@@ -1,0 +1,191 @@
+<?php
+/**
+ * Implements hook_form_FORMID_alter().
+ *
+ * Adds post-date based specific visibility options to add block form.
+ *
+ * @see block_add_block_form()
+ */
+function visibility_form_block_add_block_form_alter(&$form, &$form_state) {
+  visibility_form_block_admin_configure_alter($form, $form_state);
+}
+
+/**
+ * Implements hook_form_FORMID_alter().
+ *
+ * Adds post-date based specific visibility options to block configuration form.
+ *
+ * @see block_admin_configure()
+ */
+function visibility_form_block_admin_configure_alter(&$form, &$form_state) {
+  $prev_set_date_config = db_query("SELECT res_date, start FROM {block_date} WHERE module = :module AND 
+    delta = :delta", array(
+    ':module' => $form['module']['#value'],
+    ':delta' => $form['delta']['#value'],
+    ))->fetch(PDO::FETCH_BOTH);
+  // The Post Date vertical tab.
+  $form['visibility']['post_date'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Post Date'),
+    '#collapsible' => TRUE,
+    '#collapsed' => TRUE,
+    '#group' => 'visibility',
+    '#weight' => 30,
+  );
+
+  // The radio button in the post date vertical tab.
+  $form['visibility']['post_date']['start'] = array(
+    '#type' => 'radios',
+    '#title' => t('Show block for nodes created'),
+    '#default_value' => $prev_set_date_config[1],
+    '#options' => array(
+    	'after' => t('On or after below date'),
+    	'before' => t('Prior to below date'),
+    	),
+  );
+
+  // The date field in the post date vertical tab.
+  $form['visibility']['post_date']['res_date'] = array(
+  	'#type' => 'textfield',
+  	'#title' => t('Date'),
+  	'#default_value' => $prev_set_date_config[0],
+  	'#description' => t('Date in MM/DD/YYYY format'),
+  	'#size' => 10,
+    '#maxlength' => 10,
+  	'#weight' => 10,
+  	);
+
+  $form['#submit'][] = 'visibility_form_block_admin_configure_submit';
+  $form['#validate'][] = 'visibility_form_block_admin_configure_validate';
+  $form['visibility']['post_date']['#attached']['js'] = array(drupal_get_path('module', 'visibility') . '/visibility.js');
+}
+
+/**
+ * Form validation handler for 
+ * visibility_form_block_admin_configure_alter().
+ *
+ * validates the date entered into the date field.
+ *
+ * @see visibility_form_block_admin_configure_alter()
+ */
+function visibility_form_block_admin_configure_validate($form, $form_state) {
+  $res_date = $form_state['values']['res_date'];
+  $arr  = explode('/', $res_date);
+  if (is_numeric($arr[0]) && is_numeric($arr[1]) && is_numeric($arr[2])){
+    $check = checkdate($arr[0], $arr[1], $arr[2]);
+    if ((count($arr) != 3) || (!$check)){
+       form_set_error('res_date', t('Please enter a valid date'));
+    }
+  }
+  else {
+    form_set_error('res_date', t('Month, Day, Year in the date should be numeric'));
+  }
+}
+
+/**
+ * Form submission handler for 
+ * visibility_form_block_admin_configure_alter().
+ *
+ * @see visibility_form_block_admin_configure_alter()
+ */
+function visibility_form_block_admin_configure_submit($form, &$form_state) {
+  // delete already set date configurations
+  db_delete('block_date')
+    ->condition('module', $form_state['values']['module'])
+    ->condition('delta', $form_state['values']['delta'])
+    ->execute();
+  // set new configurations
+  $query = db_insert('block_date')->fields(array('res_date', 'start','module', 'delta'));
+    $query->values(array(
+      'res_date' => $form_state['values']['res_date'],
+      'start' => $form_state['values']['start'],
+      'module' => $form_state['values']['module'],
+      'delta' => $form_state['values']['delta'],
+    ));
+  $query->execute();
+}
+
+/**
+ * Implements hook_form_FORMID_alter().
+ *
+ * Adds date specific submit handler to delete custom block form.
+ *
+ * @see block_custom_block_delete()
+ */
+function visibility_form_block_custom_block_delete_alter(&$form, &$form_state) {
+  $form['#submit'][] = 'visibility_form_block_custom_block_delete_submit';
+}
+
+/**
+ * Form submission handler for visibility_form_block_custom_block_delete_alter().
+ *
+ * @see visibility_form_block_custom_block_delete_alter()
+ */
+function visibility_form_block_custom_block_delete_submit($form, &$form_state) {
+  db_delete('block_date')
+    ->condition('module', 'block')
+    ->condition('delta', $form_state['values']['bid'])
+    ->execute();
+}
+
+/**
+ * Implements hook_block_list_alter().
+ *
+ * Check the date specific visibility settings. Remove the block if the
+ * visibility conditions are not met.
+ */
+function visibility_block_list_alter(&$blocks) {
+  global $theme_key;
+
+  //array to store block visibility date
+  $block_date_start = array();
+  $result = db_query('SELECT module, delta, start, res_date FROM {block_date}');
+  foreach ($result as $record){
+    $block_date_start[$record->module][$record->delta]['start'] = $record->start;
+    $block_date_start[$record->module][$record->delta]['res_date'] = $record->res_date;
+  }
+
+  $node = menu_get_object();
+
+  foreach ($blocks as $key => $block) {
+    if(isset($block_date_start[$block->module][$block->delta])) {
+      if (!empty($node)) {
+          $node_created = format_date($node->created, 'custom', 'm/d/Y');
+          $start = $block_date_start[$block->module][$block->delta]['start'];
+          $res_date = $block_date_start[$block->module][$block->delta]['res_date'];
+
+          if (!visibility_check($node_created, $start, $res_date)){
+               unset($blocks[$key]);
+               continue;
+          }
+      }
+    }
+  }
+}
+
+/**
+ * determines whether the block should be displayed or not
+ *
+ */
+function visibility_check($node_created, $start, $res_date) {
+  list($res_month, $res_day, $res_year)  = explode('/', $res_date);
+  list($node_month, $node_day, $node_year)  = explode('/', $node_created);
+  $res_date = mktime(0, 0, 0, $res_month, $res_day, $res_year);
+  $node_created = mktime(0, 0, 0, $node_month, $node_day, $node_year);
+  switch ($start) {
+    case 'before':
+      if ($res_date > $node_created) {
+        return TRUE;
+      } else {
+        return FALSE;
+      }
+    
+    case 'after':
+      if ($res_date < $node_created) {
+        return TRUE;
+      } else {
+        return FALSE;
+      }
+      
+  }
+}

@@ -1,0 +1,5 @@
+name = Visibility By Date
+description = Manages visibility of blocks by post date.
+core = 7.x
+package = Visibility
+dependencies[] = block
